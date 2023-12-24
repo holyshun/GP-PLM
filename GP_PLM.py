@@ -2,10 +2,25 @@ import numpy as np
 from scipy.stats import multivariate_normal as mvn
 from scipy.stats import norm
 from sklearn.gaussian_process.kernels import Matern, WhiteKernel, DotProduct, RBF
-import os
-import pandas as pd
 
 def bayes_est(X_test, X_train, t, y, kernel_func_theta, kernel_func_f, s_epsilon):
+    '''
+    Input:
+    - X_test: Numpy array containing feature values of the test data (shape: [number of test samples, dimension of features])
+    - X_train: Numpy array containing feature values of the training data (shape: [number of training samples, dimension of features])
+    - t: Numpy array containing the treatment variables of the training data
+    - y: Numpy array containing the response variables of the training data
+    - kernel_func_theta: Kernel function for theta
+    - kernel_func_f: Kernel function for f
+    - s_epsilon: Precision of the noise
+
+    Output:
+    - mu_theta_y: Mean values of the posterior predictive of the CATE for the test data (shape: [number of test samples,])
+    - post_Sigma_theta: Covariance matrix of the posterior predictive of the CATE for the test data (shape: [number of test samples, number of test samples])
+
+    This function performs Bayesian estimation to determine the predictive distribution of the CATE for the test data based on the given training data.
+    It uses two kernel functions to model the relationship among feature, treatment, and response, and calculates the predictive mean and variance.
+    '''
     (n, d) = X_train.shape
     (m, d) = X_test.shape
     Phi_z = kernel_func_f(X_train)
@@ -29,6 +44,10 @@ def bayes_est(X_test, X_train, t, y, kernel_func_theta, kernel_func_f, s_epsilon
     F[(m+n):(m+2*n), 0:n] = s_epsilon*T
     F[(m+n):(m+2*n), (m+n):(m+2*n)] = s_epsilon*np.eye(n)
 
+    '''
+    To calculate the inverse of F, we use the matrix formula of Shur complement.
+    A, B, C, and D are the block matrices of F.
+    '''
     A_inv = E_inv - E_inv.dot(F.dot(np.linalg.inv(np.eye(m+2*n)+E_inv.dot(F))).dot(E_inv))
     B = np.zeros((m+2*n, n))
     B[0:n, 0:n] = -s_epsilon*T
@@ -42,21 +61,37 @@ def bayes_est(X_test, X_train, t, y, kernel_func_theta, kernel_func_f, s_epsilon
     except:
         S_inv = np.linalg.pinv(S)
     
-    Sigma_Theta_Theta = A_inv+A_inv.dot(B.dot(S_inv.dot(C.dot(A_inv))))
-    Sigma_Theta_y = -A_inv.dot(B.dot(S_inv))
-    Sigma_y_Theta = Sigma_Theta_y.T
+    Sigma_theta_theta = A_inv+A_inv.dot(B.dot(S_inv.dot(C.dot(A_inv))))
+    Sigma_theta_y = -A_inv.dot(B.dot(S_inv))
+    Sigma_y_theta = Sigma_theta_y.T
     Sigma_y_y = S_inv
     
     Sigma_y_y_inv = S
     
-    M = Sigma_Theta_y.dot(Sigma_y_y_inv)
-    mu_Theta_y = M.dot(y)
+    M = Sigma_theta_y.dot(Sigma_y_y_inv)
+    mu_theta_y = M.dot(y)
     
-    post_Sigma_Theta = Sigma_Theta_Theta - Sigma_Theta_y.dot(Sigma_y_y_inv.dot(Sigma_y_Theta))
+    post_Sigma_theta = Sigma_theta_theta - Sigma_theta_y.dot(Sigma_y_y_inv.dot(Sigma_y_theta))
     
-    return mu_Theta_y[n:(n+m)], post_Sigma_Theta[n:(n+m), n:(n+m)]
+    return mu_theta_y[n:(n+m)], post_Sigma_theta[n:(n+m), n:(n+m)]
 
 def marginal_likelihood(X, t, y, s_epsilon, kernel_func_theta, kernel_func_f):
+    '''
+    Input: 
+    - X: Numpy array containing feature values of the data (shape: [number of samples, dimension of features])
+    - t: Numpy array containing the treatment variables of the data
+    - y: Numpy array containing the response variables of the data
+    - s_epsilon: Scalar representing the precision of the noise
+    - kernel_func_theta: Kernel function for theta
+    - kernel_func_f: Kernel function for f
+
+    Output:
+    - The log of the marginal likelihood of the data given the model parameters, or -∞ if the covariance matrix is singular.
+
+    This function computes the marginal likelihood of the observed data (X, y) under a Bayesian model.
+    It calculates the covariance matrix using kernel functions and the provided data, and then evaluates the log of the
+    multivariate normal probability density function at y with this covariance.
+    '''
     (n, d) = X.shape
     Phi_w = kernel_func_theta(X)
     Phi_z = kernel_func_f(X)
@@ -68,6 +103,20 @@ def marginal_likelihood(X, t, y, s_epsilon, kernel_func_theta, kernel_func_f):
         return -np.inf
 
 def calc_grad_s(X, t, y, s_epsilon, kernel_func_theta, kernel_func_f):
+    '''
+    Input:
+    - X: Numpy array containing feature values of the data (shape: [number of samples, dimension of features])
+    - t: Numpy array containing the treatment variables of the data
+    - y: Numpy array containing the response variables of the data
+    - s_epsilon: Scalar representing the precision of the noise
+    - kernel_func_theta: Kernel function for theta
+    - kernel_func_f: Kernel function for f
+
+    Output:
+    - grad_s: The gradient of the log marginal likelihood with respect to the noise precision parameter (s_epsilon)
+
+    This function computes the gradient of the log marginal likelihood with respect to the noise precision parameter, s_epsilon.
+    '''
     
     (n, d) = X.shape
     Phi_w = kernel_func_theta(X)
@@ -84,7 +133,25 @@ def calc_grad_s(X, t, y, s_epsilon, kernel_func_theta, kernel_func_f):
     return grad_s
 
 def optimize_s(X, t, y, s_epsilon, kernel_func_theta, kernel_func_f, rate=1.0E-1, tol=1.0E-10, max_iter=100):
-    (n, d) = X.shape
+    '''
+    Input:
+    - X: Numpy array containing feature values of the data (shape: [number of samples, dimension of features])
+    - t: Numpy array containing the treatment variables (outputs) of the data
+    - y: Numpy array containing the response variables of the data
+    - s_epsilon: Initial value for the noise precision parameter
+    - kernel_func_theta: Kernel function for theta
+    - kernel_func_f: Kernel function for f
+    - rate: Learning rate for the gradient ascent (default: 0.1)
+    - tol: Tolerance for the convergence of the likelihood (default: 1.0E-10)
+    - max_iter: Maximum number of iterations for the optimization (default: 100)
+
+    Output:
+    - out_s_epsilon: Optimized value for the noise precision parameter
+    - new_likelihood: The marginal likelihood of the data given the optimized noise precision
+
+    This function optimizes the noise precision parameter (s_epsilon) of a Bayesian model using gradient ascent.
+    It iteratively updates the value of s_epsilon based on the gradient of the log marginal likelihood with respect to s_epsilon.
+    '''
     out_s_epsilon = s_epsilon
     pre_likelihood = marginal_likelihood(X, t, y, s_epsilon, kernel_func_theta, kernel_func_f)
     for i in range(max_iter):
@@ -96,81 +163,94 @@ def optimize_s(X, t, y, s_epsilon, kernel_func_theta, kernel_func_f, rate=1.0E-1
         pre_likelihood = new_likelihood
     return out_s_epsilon, new_likelihood
 
-def find_optimal_hyper_RBF(X, t, y, length_theta_list, length_f_list):
+def find_optimal_hyper(X, t, y, kernel_func_theta, kernel_func_f, length_theta_list, length_f_list):
+    '''
+    Input:
+    - X: Numpy array containing feature values of the data (shape: [number of samples, dimension of features])
+    - t: Numpy array containing the treatment variables (outputs) of the data
+    - y: Numpy array containing the response variables of the data
+    - kernel_func_theta: Function that generates a kernel for theta, given a length scale
+    - kernel_func_f: Function that generates a kernel for f, given a length scale
+    - length_theta_list: List of length scale parameters for the theta kernel function
+    - length_f_list: List of length scale parameters for the f kernel function
+
+    Output:
+    - optimal_s: The optimized noise precision parameter
+    - optimal_length: Tuple (length_theta, length_f) representing the optimal length scale parameters for the kernels
+
+    This function finds the optimal hyperparameters for a Bayesian model using a provided kernel function.
+    It iterates over combinations of length scale parameters provided in length_theta_list and length_f_list.
+    For each combination, it uses the provided kernel functions to create kernels for theta and f, and then optimizes the 
+    noise precision parameter (s_epsilon) using the `optimize_s` function. The goal is to find the combination of length scale 
+    parameters that yields the highest marginal likelihood, indicating the best fit of the model to the data. 
+    The function returns the optimized noise precision and the optimal length scale parameters for the kernels.
+    '''
     max_value = -np.inf
     optimal_length = (None, None)
     optimal_s = None
     for length_theta in length_theta_list:
         for length_f in length_f_list:
-            current_s, current_value = optimize_s(X, t, y, 1./np.var(y), RBF(length_theta), RBF(length_f))
+            current_s, current_value = optimize_s(X, t, y, 1./np.var(y), kernel_func_theta(length_theta), kernel_func_f(length_f))
             if current_value > max_value:
                 max_value = current_value
                 optimal_length = (length_theta, length_f)
                 optimal_s = current_s
     return optimal_s, optimal_length
 
-def bayes_est_hyper_RBF(X_test, X_train, t_train, y_train, length_theta_list, length_f_list):
-    (n, d) = X_train.shape
-    s_epsilon, (length_theta, length_f) = find_optimal_hyper_RBF(X_train, t_train, y_train, length_theta_list, length_f_list)
+def bayes_est_hyper(X_test, X_train, t_train, y_train, kernel_func_theta, kernel_func_f, length_theta_list, length_f_list):
+    '''
+    Input:
+    - X_test: Numpy array containing feature values of the test data (shape: [number of test samples, dimension of features])
+    - X_train: Numpy array containing feature values of the training data (shape: [number of training samples, dimension of features])
+    - t_train: Numpy array containing the treatment variables (outputs) of the training data
+    - y_train: Numpy array containing the response variables of the training data
+    - length_theta_list: List of length scale parameters for the RBF kernel to model theta
+    - length_f_list: List of length scale parameters for the RBF kernel to model f
+
+    Output:
+    - posterior_mean: The mean of the posterior predictive distribution of the CATE for the test data
+    - posterior_cov: The covariance matrix of the posterior predictive distribution of the CATE for the test data
+
+    This function performs Bayesian estimation of the CATE for a given test dataset using the Radial Basis Function (RBF) kernel.
+    First, it finds the optimal hyperparameters (noise precision and length scale parameters for the RBF kernels) 
+    for the Bayesian model by using the training data and the specified lists of length scale parameters.
+    This is done through the `find_optimal_hyper_RBF` function.
+    Then, using these optimal hyperparameters, it computes the posterior mean and covariance of the CATE for the test data using the `bayes_est` function.
+    '''
+    s_epsilon, (length_theta, length_f) = find_optimal_hyper(X_train, t_train, y_train, kernel_func_theta, kernel_func_f, length_theta_list, length_f_list)
     posterior_mean, posterior_cov = bayes_est(
-        X_test, X_train, t_train, y_train, RBF(length_theta), RBF(length_f), s_epsilon)
+        X_test, X_train, t_train, y_train, kernel_func_theta(length_theta), kernel_func_f(length_f), s_epsilon)
     return posterior_mean, posterior_cov
 
-def find_optimal_hyper_Matern(X, t, y, length_theta_list, length_f_list):
-    max_value = -np.inf
-    optimal_length = (None, None)
-    optimal_s = None
-    for length_theta in length_f_list:
-        for length_f in length_f_list:
-            current_s, current_value = optimize_s(X, t, y, 1./np.var(y), Matern(length_theta), Matern(length_f))
-            if current_value > max_value:
-                max_value = current_value
-                optimal_length = (length_theta, length_f)
-                optimal_s = current_s
-    return optimal_s, optimal_length
+def cate_estimator(X_train, t_train, y_train, X_test, *args):
+    '''
+    Input:
+    - X_train: Numpy array containing feature values of the training data
+    - t_train: Numpy array containing the treatment variables of the training data
+    - y_train: Numpy array containing the response variables of the training data
+    - X_test: Numpy array containing feature values of the test data
+    - *args: Optional arguments, can be:
+        - No additional arguments: uses default RBF kernels for both theta and f.
+        - Two additional arguments: uses provided kernel functions for theta and f.
+        - Four additional arguments: uses provided kernel functions and lists of length scales for theta and f.
 
-def bayes_est_hyper_Matern(X_test, X_train, t_train, y_train, length_theta_list, length_f_list):
-    (n, d) = X_train.shape
-    s_epsilon, (length_theta, length_f) = find_optimal_hyper_Matern(X_train, t_train, y_train, length_theta_list, length_f_list)
-    posterior_mean, posterior_cov = bayes_est(
-        X_test, X_train, t_train, y_train, Matern(length_theta), Matern(length_f), s_epsilon)
-    return posterior_mean, posterior_cov
+    Output:
+    - The posterior mean and covariance of the CATE for the test data, estimated using Bayesian methods.
 
-working_directory = "./"
-
-length_theta_list = [10**(i/2) for i in range(-6, 7, 1)]
-length_f_list = [10**(i/2) for i in range(-6, 7, 1)]
-
-train_file = os.path.join(working_directory, "train.csv")
-test_file = os.path.join(working_directory, "test.csv")
-
-train_data = pd.read_csv(train_file)
-test_data = pd.read_csv(test_file)
-
-X_train = train_data.drop(['Y', 'T', 'theta'], axis=1).values
-X_test = test_data.drop(['Y', 'T', 'theta'], axis=1).values
-theta_test = test_data['theta'].values
-
-y_train = train_data['Y'].values
-t_train = train_data['T'].values
+    This function performs Conditional Average Treatment Effect (CATE) estimation using Bayesian methods. It adapts to different scenarios based on the number of optional arguments provided:
+    - If no additional arguments are provided, it uses default RBF kernels for both theta and f, and optimizes the noise precision parameter before performing Bayesian estimation.
+    - If two additional arguments are provided, it expects these to be kernel functions for theta and f, and again optimizes the noise precision parameter before performing Bayesian estimation.
+    - If four additional arguments are provided, it expects two kernel functions and two lists of length scales for theta and f, and then performs Bayesian estimation with hyperparameter optimization.
+    '''
+    if len(args) == 0:
+        s_epsilon = optimize_s(X_train, t_train, y_train, 1./np.var(y_train), RBF(), RBF())[0]
+        return bayes_est(X_test, X_train, t_train, y_train, RBF(), RBF(), s_epsilon)
     
-posterior_mean, posterior_cov = bayes_est_hyper_RBF(X_test, X_train, t_train, y_train, length_theta_list, length_f_list)
-posterior_var = np.diag(posterior_cov) 
-
-estimation_error = np.mean((theta_test-posterior_mean)**2)
-m, _ = X_test.shape
-ci_lower = np.zeros(m)
-ci_upper = np.zeros(m)
-for j in range(m):
-    ci_lower[j] = norm.ppf(0.025, loc=posterior_mean[j], scale=np.sqrt(posterior_var[j]))
-    ci_upper[j] = norm.ppf(0.975, loc=posterior_mean[j], scale=np.sqrt(posterior_var[j]))
-        
-coverage = np.mean(np.logical_and(theta_test>ci_lower, theta_test<ci_upper))
-ci_length = np.mean(ci_upper-ci_lower)
-
-print(f'mean MSE: {estimation_error}')
-print(f'std MSE: {estimation_error}')
-print(f'mean coverage: {coverage}')
-print(f'std coverage: {coverage}')
-print(f'mean ci length: {ci_length}')
-print(f'std ci length: {ci_length}')
+    if len(args) == 2:
+        kernel_func_theta, kernel_func_f = args
+        s_epsilon = optimize_s(X_train, t_train, y_train, 1./np.var(y_train), kernel_func_theta(), kernel_func_f())[0]
+        return bayes_est(X_test, X_train, t_train, y_train, kernel_func_theta(), kernel_func_f(), s_epsilon)
+    
+    if len(args) == 4:
+        kernel_func_theta, kernel_func_f, length_theta_list, length_f_list = args
+        return bayes_est_hyper(X_test, X_train, t_train, y_train, kernel_func_theta, kernel_func_f, length_theta_list, length_f_list)
