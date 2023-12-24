@@ -29,7 +29,7 @@ The *cate_estimator* function in this repository is designed to estimate CATE us
 
 ### Basic Usage with Default RBF Kernels
 ```
-from GP-PLM import cate_estimator
+from GP_PLM import cate_estimator
 import numpy as np
 
 # Sample data preparation
