@@ -60,6 +60,8 @@ length_f_list = [...]
 posterior_mean, posterior_cov = cate_estimator(X_train, t_train, y_train, X_test, Matern, Matern, length_theta_list, length_f_list)
 ```
 
+You can also see an example of usage in *main.py*, which uses *train.csv* and *test.csv*.
+
 ## License
 
 This repository is licensed under "LICENSE"
